@@ -32,8 +32,11 @@ from ascend_transpiler.ops.mappings import (
     BINOP_AST_TO_KIND,
     BINOP_AST_TO_SCALAR_KIND,
     CALL_NAME_TO_KIND,
+    COMPARE_MODE_TO_CONST,
+    COMPARE_OPS,
     DUPLICATE_OPS,
     ELEMENTWISE_BINARY_OPS,
+    INPLACE_TERNARY_OPS,
     MATMUL_OPS,
     REDUCTION_OPS,
     SUPPORTED_DTYPES,
@@ -349,24 +352,23 @@ class ASTAnalyzer:
             self._emit_node(kind, [src], [out], node, {"alpha": alpha})
             return out
 
-        if kind in ELEMENTWISE_BINARY_OPS:
+        if kind in ELEMENTWISE_BINARY_OPS or kind in {OpKind.ADD_RELU, OpKind.SUB_RELU}:
             lhs = self._lower_expr(node.args[0])
             rhs = self._lower_expr(node.args[1])
             self._emit_node(kind, [lhs, rhs], [out], node)
             return out
 
-        if kind in {OpKind.MAXS, OpKind.MINS}:
-            src = self._lower_expr(node.args[0])
-            if not (len(node.args) >= 2 and isinstance(node.args[1], ast.Constant)):
-                raise UnsupportedOperationError(
-                    f"{fname}: second argument must be a scalar constant",
-                    getattr(node, "lineno", None),
-                )
-            scalar_val = float(node.args[1].value)
-            self._emit_node(kind, [src], [out], node, {"scalar_value": scalar_val})
+        # mul_cast(x, y, dtype) — Mul + Cast fused
+        if kind == OpKind.MUL_CAST:
+            x = self._lower_expr(node.args[0])
+            y = self._lower_expr(node.args[1])
+            target_dtype = self._eval_dtype_node(node.args[2], "mul_cast")
+            self._emit_node(kind, [x, y], [out], node, {"target_dtype": target_dtype})
             return out
 
-        if kind in {OpKind.SHIFT_LEFT, OpKind.SHIFT_RIGHT}:
+        # Scalar-second ops: ands, ors, maxs, mins, shift_left, shift_right
+        if kind in {OpKind.ANDS, OpKind.ORS, OpKind.MAXS, OpKind.MINS,
+                    OpKind.SHIFT_LEFT, OpKind.SHIFT_RIGHT}:
             src = self._lower_expr(node.args[0])
             if not (len(node.args) >= 2 and isinstance(node.args[1], ast.Constant)):
                 raise UnsupportedOperationError(
@@ -389,6 +391,63 @@ class ASTAnalyzer:
             self._emit_node(kind, [x, y], [out], node, {"alpha": alpha})
             return out
 
+        # 3-input in-place fused ops: mul_add_dst(src0, src1, acc)
+        #   inputs stored as [src0, src1, acc]; acc is the accumulator (in-place output)
+        if kind in INPLACE_TERNARY_OPS:
+            a = self._lower_expr(node.args[0])
+            b = self._lower_expr(node.args[1])
+            acc = self._lower_expr(node.args[2])
+            self._emit_node(kind, [a, b, acc], [out], node)
+            return out
+
+        # compare(x, y, mode="eq") → Compare(dst, x, y, CMPMODE_EQ, len)
+        if kind == OpKind.COMPARE:
+            x = self._lower_expr(node.args[0])
+            y = self._lower_expr(node.args[1])
+            mode = "eq"
+            if len(node.args) >= 3 and isinstance(node.args[2], ast.Constant):
+                mode = str(node.args[2].value)
+            for kw in node.keywords:
+                if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
+                    mode = str(kw.value.value)
+            if mode not in COMPARE_MODE_TO_CONST:
+                raise UnsupportedOperationError(
+                    f"compare: unknown mode '{mode}', use one of {list(COMPARE_MODE_TO_CONST)}",
+                    getattr(node, "lineno", None),
+                )
+            self._emit_node(kind, [x, y], [out], node, {"mode": mode})
+            return out
+
+        # compares(x, scalar, mode="eq") → Compares(dst, x, scalar, CMPMODE_EQ, len)
+        if kind == OpKind.COMPARES:
+            x = self._lower_expr(node.args[0])
+            if not (len(node.args) >= 2 and isinstance(node.args[1], ast.Constant)):
+                raise UnsupportedOperationError(
+                    "compares: second argument must be a scalar constant",
+                    getattr(node, "lineno", None),
+                )
+            scalar_val = node.args[1].value
+            mode = "eq"
+            if len(node.args) >= 3 and isinstance(node.args[2], ast.Constant):
+                mode = str(node.args[2].value)
+            for kw in node.keywords:
+                if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
+                    mode = str(kw.value.value)
+            if mode not in COMPARE_MODE_TO_CONST:
+                raise UnsupportedOperationError(
+                    f"compares: unknown mode '{mode}'", getattr(node, "lineno", None),
+                )
+            self._emit_node(kind, [x], [out], node, {"scalar_value": scalar_val, "mode": mode})
+            return out
+
+        # select(src0, src1, mask) → Select(dst, src0, src1, mask, len)
+        if kind == OpKind.SELECT:
+            src0 = self._lower_expr(node.args[0])
+            src1 = self._lower_expr(node.args[1])
+            mask = self._lower_expr(node.args[2])
+            self._emit_node(kind, [src0, src1, mask], [out], node)
+            return out
+
         if kind == OpKind.DUPLICATE:
             fill_value = 0.0
             if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
@@ -398,6 +457,18 @@ class ASTAnalyzer:
                     fill_value = float(kw.value.value)
             src_args = [self._lower_expr(node.args[0])] if node.args else []
             self._emit_node(kind, src_args, [out], node, {"fill_value": fill_value})
+            return out
+
+        # create_vec_index(x, start=0) → CreateVecIndex(dst, start, len)
+        if kind == OpKind.CREATE_VEC_INDEX:
+            src_args = [self._lower_expr(node.args[0])] if node.args else []
+            start = 0
+            if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+                start = node.args[1].value
+            for kw in node.keywords:
+                if kw.arg == "start" and isinstance(kw.value, ast.Constant):
+                    start = kw.value.value
+            self._emit_node(kind, src_args, [out], node, {"start": start})
             return out
 
         if kind in REDUCTION_OPS:
@@ -450,10 +521,20 @@ class ASTAnalyzer:
 
     def _infer_var_types(self) -> None:
         for node in self._nodes:
-            if node.kind == OpKind.CAST:
+            if node.kind in {OpKind.CAST, OpKind.MUL_CAST}:
                 target = node.attrs.get("target_dtype", self._primary_input_dtype())
                 for out in node.outputs:
                     self._var_types[out] = target
+                continue
+
+            if node.kind in COMPARE_OPS:
+                for out in node.outputs:
+                    self._var_types[out] = "uint8"
+                continue
+
+            if node.kind == OpKind.CREATE_VEC_INDEX:
+                for out in node.outputs:
+                    self._var_types[out] = "int32"
                 continue
 
             # Propagate dtype of first input

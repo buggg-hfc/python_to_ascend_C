@@ -1,4 +1,8 @@
-"""All mapping tables between Python DSL and Ascend C APIs."""
+"""All mapping tables between Python DSL and AscendC APIs.
+
+API source: AscendC Memory矢量计算API (basic vector API set).
+High-level math library APIs (Tanh, Sin, Gelu, etc.) are noted where used.
+"""
 from __future__ import annotations
 
 import ast
@@ -54,9 +58,9 @@ BINOP_AST_TO_KIND: dict[type, OpKind] = {
     ast.Sub: OpKind.SUB,
     ast.Mult: OpKind.MUL,
     ast.Div: OpKind.DIV,
-    ast.FloorDiv: OpKind.FLOORDIV,
-    ast.Mod: OpKind.MOD,
-    ast.Pow: OpKind.POW,
+    ast.FloorDiv: OpKind.FLOORDIV,   # no direct AscendC API; codegen raises error
+    ast.Mod: OpKind.MOD,             # no direct AscendC API; codegen raises error
+    ast.Pow: OpKind.POW,             # no direct AscendC API; codegen raises error
     ast.BitAnd: OpKind.LOGICAL_AND,
     ast.BitOr: OpKind.LOGICAL_OR,
 }
@@ -73,6 +77,7 @@ BINOP_AST_TO_SCALAR_KIND: dict[type, OpKind] = {
 # Call name → OpKind
 # ---------------------------------------------------------------------------
 CALL_NAME_TO_KIND: dict[str, OpKind] = {
+    # Unary
     "relu": OpKind.RELU,
     "sqrt": OpKind.SQRT,
     "exp": OpKind.EXP,
@@ -92,23 +97,43 @@ CALL_NAME_TO_KIND: dict[str, OpKind] = {
     "leaky_relu": OpKind.LEAKY_RELU,
     "rsqrt": OpKind.RSQRT,
     "logical_not": OpKind.LOGICAL_NOT,
+    # Binary tensor×tensor
     "maximum": OpKind.MAXIMUM,
     "minimum": OpKind.MINIMUM,
     "logical_and": OpKind.LOGICAL_AND,
     "logical_or": OpKind.LOGICAL_OR,
+    "add_relu": OpKind.ADD_RELU,
+    "sub_relu": OpKind.SUB_RELU,
+    "mul_cast": OpKind.MUL_CAST,
+    # Binary tensor×scalar
     "maxs": OpKind.MAXS,
     "mins": OpKind.MINS,
+    "ands": OpKind.ANDS,
+    "ors": OpKind.ORS,
     "shift_left": OpKind.SHIFT_LEFT,
     "shift_right": OpKind.SHIFT_RIGHT,
+    # 3-input fused
     "axpy": OpKind.AXPY,
+    "mul_add_dst": OpKind.MUL_ADD_DST,
+    "fused_mul_add": OpKind.FUSED_MUL_ADD,
+    "mul_add_relu": OpKind.MUL_ADD_RELU,
+    # Compare & select
+    "compare": OpKind.COMPARE,
+    "compares": OpKind.COMPARES,
+    "select": OpKind.SELECT,
+    # Data fill
     "duplicate": OpKind.DUPLICATE,
+    "create_vec_index": OpKind.CREATE_VEC_INDEX,
+    # Type conversion
     "cast": OpKind.CAST,
+    # MatMul
     "matmul": OpKind.MATMUL,
+    # Reductions
     "reduce_sum": OpKind.REDUCE_SUM,
     "reduce_max": OpKind.REDUCE_MAX,
     "reduce_min": OpKind.REDUCE_MIN,
     "reduce_mean": OpKind.REDUCE_MEAN,
-    # common aliases
+    # Common aliases
     "sum": OpKind.REDUCE_SUM,
     "mean": OpKind.REDUCE_MEAN,
 }
@@ -116,14 +141,17 @@ CALL_NAME_TO_KIND: dict[str, OpKind] = {
 # ---------------------------------------------------------------------------
 # OpKind → AscendC API name
 # ---------------------------------------------------------------------------
+
+# Basic binary ops confirmed in AscendC vector API table
 BINOP_KIND_TO_API: dict[OpKind, str] = {
     OpKind.ADD: "Add",
     OpKind.SUB: "Sub",
     OpKind.MUL: "Mul",
     OpKind.DIV: "Div",
-    OpKind.FLOORDIV: "Div",  # closest; real floor division needs Cast post
-    OpKind.MOD: "Mod",
-    OpKind.POW: "Pow",
+    OpKind.ADD_RELU: "AddRelu",
+    OpKind.SUB_RELU: "SubRelu",
+    # FLOORDIV / MOD / POW intentionally omitted — no AscendC basic API;
+    # codegen raises UnsupportedOperationError for these.
 }
 
 SCALAR_BINOP_KIND_TO_API: dict[OpKind, str] = {
@@ -133,6 +161,8 @@ SCALAR_BINOP_KIND_TO_API: dict[OpKind, str] = {
     OpKind.DIVS: "Divs",
     OpKind.MAXS: "Maxs",
     OpKind.MINS: "Mins",
+    OpKind.ANDS: "Ands",
+    OpKind.ORS: "Ors",
     OpKind.SHIFT_LEFT: "ShiftLeft",
     OpKind.SHIFT_RIGHT: "ShiftRight",
 }
@@ -143,30 +173,30 @@ UNOP_KIND_TO_API: dict[OpKind, str] = {
     OpKind.EXP: "Exp",
     OpKind.LOG: "Ln",          # AscendC basic API: Ln (natural log)
     OpKind.ABS: "Abs",
-    OpKind.NEG: "Neg",
-    OpKind.TANH: "Tanh",
-    OpKind.SIGMOID: "Sigmoid",
-    OpKind.SIN: "Sin",
-    OpKind.COS: "Cos",
-    OpKind.FLOOR: "Floor",
-    OpKind.CEIL: "Ceil",
-    OpKind.ROUND: "Round",
-    OpKind.SIGN: "Sign",
+    # NEG not in basic API table — expanded to Muls(dst, src, -1, len) in codegen
+    OpKind.TANH: "Tanh",       # high-level math library
+    OpKind.SIGMOID: "Sigmoid", # high-level math library
+    OpKind.SIN: "Sin",         # high-level math library
+    OpKind.COS: "Cos",         # high-level math library
+    OpKind.FLOOR: "Floor",     # high-level math library
+    OpKind.CEIL: "Ceil",       # high-level math library
+    OpKind.ROUND: "Round",     # high-level math library
+    OpKind.SIGN: "Sign",       # high-level math library
     OpKind.RECIPROCAL: "Reciprocal",
-    OpKind.GELU: "Gelu",
-    OpKind.SILU: "Silu",
+    OpKind.GELU: "Gelu",       # high-level math library
+    OpKind.SILU: "Silu",       # high-level math library
     OpKind.LEAKY_RELU: "LeakyRelu",
     OpKind.RSQRT: "Rsqrt",
     OpKind.LOGICAL_NOT: "Not",
 }
 
 BINOP_WITH_PARAM_KIND_TO_API: dict[OpKind, str] = {
-    OpKind.LEAKY_RELU: "LeakyRelu",  # LeakyRelu(dst, src, alpha, len)
+    OpKind.LEAKY_RELU: "LeakyRelu",
 }
 
 ELEMENTWISE_BINARY_KIND_TO_API: dict[OpKind, str] = {
-    OpKind.MAXIMUM: "Max",     # AscendC basic API: Max
-    OpKind.MINIMUM: "Min",     # AscendC basic API: Min
+    OpKind.MAXIMUM: "Max",
+    OpKind.MINIMUM: "Min",
     OpKind.LOGICAL_AND: "And",
     OpKind.LOGICAL_OR: "Or",
 }
@@ -175,21 +205,37 @@ REDUCE_KIND_TO_API: dict[OpKind, str] = {
     OpKind.REDUCE_SUM: "ReduceSum",
     OpKind.REDUCE_MAX: "ReduceMax",
     OpKind.REDUCE_MIN: "ReduceMin",
-    OpKind.REDUCE_MEAN: "ReduceMean",
+    OpKind.REDUCE_MEAN: "ReduceMean",  # high-level; may not exist on all hardware
 }
 
-# Sets for category classification
+# Compare mode string → AscendC constant name
+COMPARE_MODE_TO_CONST: dict[str, str] = {
+    "eq": "CMPMODE_EQ",
+    "ne": "CMPMODE_NE",
+    "lt": "CMPMODE_LT",
+    "gt": "CMPMODE_GT",
+    "le": "CMPMODE_LE",
+    "ge": "CMPMODE_GE",
+}
+
+# 3-input in-place fused ops: MulAddDst / FusedMulAdd / MulAddRelu
+INPLACE_TERNARY_KIND_TO_API: dict[OpKind, str] = {
+    OpKind.MUL_ADD_DST: "MulAddDst",
+    OpKind.FUSED_MUL_ADD: "FusedMulAdd",
+    OpKind.MUL_ADD_RELU: "MulAddRelu",
+}
+
+# ---------------------------------------------------------------------------
+# Category sets (frozenset — auto-derived from API dicts above)
+# ---------------------------------------------------------------------------
 REDUCTION_OPS: frozenset[OpKind] = frozenset(REDUCE_KIND_TO_API)
 MATMUL_OPS: frozenset[OpKind] = frozenset({OpKind.MATMUL})
 SCALAR_OPS: frozenset[OpKind] = frozenset(SCALAR_BINOP_KIND_TO_API)
 UNARY_OPS: frozenset[OpKind] = frozenset(UNOP_KIND_TO_API)
 BINARY_OPS: frozenset[OpKind] = frozenset(BINOP_KIND_TO_API)
 ELEMENTWISE_BINARY_OPS: frozenset[OpKind] = frozenset(ELEMENTWISE_BINARY_KIND_TO_API)
-# Ops with an extra scalar parameter (alpha, etc.)
 PARAMETERIZED_UNARY_OPS: frozenset[OpKind] = frozenset({OpKind.LEAKY_RELU})
-# Axpy: dst += alpha * src  (2 tensor inputs + 1 scalar attr)
 AXPY_OPS: frozenset[OpKind] = frozenset({OpKind.AXPY})
-# Duplicate: fill local tensor with scalar constant
+INPLACE_TERNARY_OPS: frozenset[OpKind] = frozenset(INPLACE_TERNARY_KIND_TO_API)
 DUPLICATE_OPS: frozenset[OpKind] = frozenset({OpKind.DUPLICATE})
-# clamp expands into MAXS + MINS nodes inside the analyzer
-CLAMP_KIND: OpKind = OpKind.MAXS  # used only as a marker; see _lower_call
+COMPARE_OPS: frozenset[OpKind] = frozenset({OpKind.COMPARE, OpKind.COMPARES})
