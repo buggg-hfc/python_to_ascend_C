@@ -558,3 +558,347 @@ def dup_op(x: Tensor[float32]) -> Tensor[float32]:
 """
     files = _generate(src)
     assert "Duplicate(zLocal, (float)1.0, this->tileLength);" in files["dup_op.cpp"]
+
+
+# ---------------------------------------------------------------------------
+# NEG fix — expands to Muls(dst, src, -1, len) since Neg is not in basic API
+# ---------------------------------------------------------------------------
+
+def test_neg_codegen_expands_to_muls_minus_one():
+    src = """
+@ascend_op
+def neg_op(x: Tensor[float16]) -> Tensor[float16]:
+    return -x
+"""
+    files = _generate(src)
+    cpp = files["neg_op.cpp"]
+    assert "Muls(" in cpp
+    assert "-1" in cpp
+    assert "Neg(" not in cpp
+
+
+# ---------------------------------------------------------------------------
+# add_relu / sub_relu — compound binary ops
+# ---------------------------------------------------------------------------
+
+def test_add_relu_op_kind():
+    src = _src("""
+@ascend_op
+def add_relu_op(x: Tensor[float16], y: Tensor[float16]) -> Tensor[float16]:
+    return add_relu(x, y)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.ADD_RELU
+
+
+def test_sub_relu_op_kind():
+    src = _src("""
+@ascend_op
+def sub_relu_op(x: Tensor[float16], y: Tensor[float16]) -> Tensor[float16]:
+    return sub_relu(x, y)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.SUB_RELU
+
+
+def test_add_relu_codegen_emits_addrelu_api():
+    src = """
+@ascend_op
+def add_relu_op(x: Tensor[float16], y: Tensor[float16]) -> Tensor[float16]:
+    return add_relu(x, y)
+"""
+    files = _generate(src)
+    assert "AddRelu(zLocal, xLocal, yLocal, this->tileLength);" in files["add_relu_op.cpp"]
+
+
+def test_sub_relu_codegen_emits_subrelu_api():
+    src = """
+@ascend_op
+def sub_relu_op(x: Tensor[float16], y: Tensor[float16]) -> Tensor[float16]:
+    return sub_relu(x, y)
+"""
+    files = _generate(src)
+    assert "SubRelu(zLocal, xLocal, yLocal, this->tileLength);" in files["sub_relu_op.cpp"]
+
+
+# ---------------------------------------------------------------------------
+# mul_cast
+# ---------------------------------------------------------------------------
+
+def test_mul_cast_op_kind():
+    src = _src("""
+@ascend_op
+def mulcast_op(x: Tensor[float16], y: Tensor[float16]) -> Tensor[float32]:
+    return mul_cast(x, y, float32)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.MUL_CAST
+
+
+def test_mul_cast_codegen_emits_mulcast_api():
+    src = """
+@ascend_op
+def mulcast_op(x: Tensor[float16], y: Tensor[float16]) -> Tensor[float32]:
+    return mul_cast(x, y, float32)
+"""
+    files = _generate(src)
+    assert "MulCast(zLocal, xLocal, yLocal, this->tileLength);" in files["mulcast_op.cpp"]
+
+
+# ---------------------------------------------------------------------------
+# ands / ors — scalar bitwise ops
+# ---------------------------------------------------------------------------
+
+def test_ands_op_kind():
+    src = _src("""
+@ascend_op
+def ands_op(x: Tensor[int32]) -> Tensor[int32]:
+    return ands(x, 0xFF)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.ANDS
+    assert ir.nodes[0].attrs["scalar_value"] == 0xFF
+
+
+def test_ors_op_kind():
+    src = _src("""
+@ascend_op
+def ors_op(x: Tensor[int32]) -> Tensor[int32]:
+    return ors(x, 1)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.ORS
+    assert ir.nodes[0].attrs["scalar_value"] == 1
+
+
+def test_ands_codegen_emits_ands_api():
+    src = """
+@ascend_op
+def ands_op(x: Tensor[int32]) -> Tensor[int32]:
+    return ands(x, 255)
+"""
+    files = _generate(src)
+    assert "Ands(zLocal, xLocal, (int32_t)255, this->tileLength);" in files["ands_op.cpp"]
+
+
+def test_ors_codegen_emits_ors_api():
+    src = """
+@ascend_op
+def ors_op(x: Tensor[int32]) -> Tensor[int32]:
+    return ors(x, 1)
+"""
+    files = _generate(src)
+    assert "Ors(zLocal, xLocal, (int32_t)1, this->tileLength);" in files["ors_op.cpp"]
+
+
+# ---------------------------------------------------------------------------
+# 3-input in-place fused ops — mul_add_dst / fused_mul_add / mul_add_relu
+# ---------------------------------------------------------------------------
+
+def test_mul_add_dst_op_kind():
+    src = _src("""
+@ascend_op
+def muladddst_op(x: Tensor[float16], y: Tensor[float16], acc: Tensor[float16]) -> Tensor[float16]:
+    return mul_add_dst(x, y, acc)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.MUL_ADD_DST
+    assert ir.nodes[0].inputs == ["x", "y", "acc"]
+
+
+def test_fused_mul_add_op_kind():
+    src = _src("""
+@ascend_op
+def fusedmuladd_op(acc: Tensor[float16], x: Tensor[float16], y: Tensor[float16]) -> Tensor[float16]:
+    return fused_mul_add(acc, x, y)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.FUSED_MUL_ADD
+
+
+def test_mul_add_relu_op_kind():
+    src = _src("""
+@ascend_op
+def muladdrel_op(acc: Tensor[float16], x: Tensor[float16], y: Tensor[float16]) -> Tensor[float16]:
+    return mul_add_relu(acc, x, y)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.MUL_ADD_RELU
+
+
+def test_mul_add_dst_codegen_emits_muladddst_api():
+    src = """
+@ascend_op
+def muladddst_op(x: Tensor[float16], y: Tensor[float16], acc: Tensor[float16]) -> Tensor[float16]:
+    return mul_add_dst(x, y, acc)
+"""
+    files = _generate(src)
+    cpp = files["muladddst_op.cpp"]
+    assert "Adds(" in cpp          # acc-copy step
+    assert "MulAddDst(" in cpp
+
+
+def test_fused_mul_add_codegen_emits_fusedmuladd_api():
+    src = """
+@ascend_op
+def fusedmuladd_op(acc: Tensor[float16], x: Tensor[float16], y: Tensor[float16]) -> Tensor[float16]:
+    return fused_mul_add(acc, x, y)
+"""
+    files = _generate(src)
+    cpp = files["fusedmuladd_op.cpp"]
+    assert "Adds(" in cpp
+    assert "FusedMulAdd(" in cpp
+
+
+# ---------------------------------------------------------------------------
+# compare / compares / select
+# ---------------------------------------------------------------------------
+
+def test_compare_op_kind_and_mode():
+    src = _src("""
+@ascend_op
+def cmp_op(x: Tensor[float16], y: Tensor[float16]) -> Tensor[uint8]:
+    return compare(x, y, "gt")
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.COMPARE
+    assert ir.nodes[0].attrs["mode"] == "gt"
+
+
+def test_compare_output_type_is_uint8():
+    src = _src("""
+@ascend_op
+def cmp_op(x: Tensor[float16], y: Tensor[float16]) -> Tensor[uint8]:
+    return compare(x, y, "eq")
+""")
+    [ir] = analyze_file(src)
+    assert ir.var_types.get(ir.outputs[0].name) == "uint8"
+
+
+def test_compares_op_kind():
+    src = _src("""
+@ascend_op
+def cmps_op(x: Tensor[float16]) -> Tensor[uint8]:
+    return compares(x, 0.5, "lt")
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.COMPARES
+    assert ir.nodes[0].attrs["scalar_value"] == 0.5
+    assert ir.nodes[0].attrs["mode"] == "lt"
+
+
+def test_compare_codegen_emits_compare_with_mode_const():
+    src = """
+@ascend_op
+def cmp_op(x: Tensor[float16], y: Tensor[float16]) -> Tensor[uint8]:
+    return compare(x, y, "gt")
+"""
+    files = _generate(src)
+    cpp = files["cmp_op.cpp"]
+    assert "Compare(zLocal, xLocal, yLocal, CMPMODE_GT, this->tileLength);" in cpp
+
+
+def test_compares_codegen_emits_compares_with_scalar():
+    src = """
+@ascend_op
+def cmps_op(x: Tensor[float16]) -> Tensor[uint8]:
+    return compares(x, 0.0, "eq")
+"""
+    files = _generate(src)
+    cpp = files["cmps_op.cpp"]
+    assert "Compares(zLocal, xLocal, (half)0.0, CMPMODE_EQ, this->tileLength);" in cpp
+
+
+def test_select_op_kind():
+    src = _src("""
+@ascend_op
+def sel_op(x: Tensor[float16], y: Tensor[float16], mask: Tensor[uint8]) -> Tensor[float16]:
+    return select(x, y, mask)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.SELECT
+    assert ir.nodes[0].inputs == ["x", "y", "mask"]
+
+
+def test_select_codegen_emits_select_api():
+    src = """
+@ascend_op
+def sel_op(x: Tensor[float16], y: Tensor[float16], mask: Tensor[uint8]) -> Tensor[float16]:
+    return select(x, y, mask)
+"""
+    files = _generate(src)
+    cpp = files["sel_op.cpp"]
+    assert "Select(zLocal, xLocal, yLocal, maskLocal, this->tileLength);" in cpp
+
+
+# ---------------------------------------------------------------------------
+# create_vec_index
+# ---------------------------------------------------------------------------
+
+def test_create_vec_index_op_kind():
+    src = _src("""
+@ascend_op
+def idx_op(x: Tensor[int32]) -> Tensor[int32]:
+    return create_vec_index(x, 0)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.CREATE_VEC_INDEX
+    assert ir.nodes[0].attrs["start"] == 0
+
+
+def test_create_vec_index_codegen_emits_createvecindex_api():
+    src = """
+@ascend_op
+def idx_op(x: Tensor[int32]) -> Tensor[int32]:
+    return create_vec_index(x, 0)
+"""
+    files = _generate(src)
+    cpp = files["idx_op.cpp"]
+    assert "CreateVecIndex(zLocal, (int32_t)0, this->tileLength);" in cpp
+
+
+def test_create_vec_index_output_type_is_int32():
+    src = _src("""
+@ascend_op
+def idx_op(x: Tensor[int32]) -> Tensor[int32]:
+    return create_vec_index(x, 0)
+""")
+    [ir] = analyze_file(src)
+    assert ir.var_types.get(ir.outputs[0].name) == "int32"
+
+
+# ---------------------------------------------------------------------------
+# Unsupported ops raise UnsupportedOperationError
+# ---------------------------------------------------------------------------
+
+def test_floordiv_raises_unsupported():
+    from ascend_transpiler.exceptions import UnsupportedOperationError
+    src = """
+@ascend_op
+def floordiv_op(x: Tensor[float32], y: Tensor[float32]) -> Tensor[float32]:
+    return x // y
+"""
+    with pytest.raises(UnsupportedOperationError):
+        _generate(src)
+
+
+def test_mod_raises_unsupported():
+    from ascend_transpiler.exceptions import UnsupportedOperationError
+    src = """
+@ascend_op
+def mod_op(x: Tensor[float32], y: Tensor[float32]) -> Tensor[float32]:
+    return x % y
+"""
+    with pytest.raises(UnsupportedOperationError):
+        _generate(src)
+
+
+def test_pow_raises_unsupported():
+    from ascend_transpiler.exceptions import UnsupportedOperationError
+    src = """
+@ascend_op
+def pow_op(x: Tensor[float32], y: Tensor[float32]) -> Tensor[float32]:
+    return x ** y
+"""
+    with pytest.raises(UnsupportedOperationError):
+        _generate(src)

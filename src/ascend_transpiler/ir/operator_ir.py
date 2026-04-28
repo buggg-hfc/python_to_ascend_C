@@ -6,31 +6,44 @@ from typing import Any
 
 
 class OpKind(Enum):
-    # Elementwise binary (tensor × tensor)
+    # Elementwise binary (tensor × tensor) — basic AscendC vector API
     ADD = auto()
     SUB = auto()
     MUL = auto()
     DIV = auto()
+    # NOTE: FLOORDIV / MOD / POW are not in the AscendC basic vector API.
+    # The analyzer still parses them so user gets a clear UnsupportedOperationError
+    # from codegen rather than a silent mis-emit.
     FLOORDIV = auto()
     MOD = auto()
     POW = auto()
-    # Elementwise binary (tensor × scalar) — AscendC uses separate API: Adds, Muls …
+    # Fused binary ops (tensor × tensor → tensor)
+    ADD_RELU = auto()     # AddRelu: relu(x + y)
+    SUB_RELU = auto()     # SubRelu: relu(x - y)
+    MUL_CAST = auto()     # MulCast: Mul + Cast  attrs: {'target_dtype': str}
+    # Elementwise binary (tensor × scalar)
     ADDS = auto()
     SUBS = auto()
     MULS = auto()
     DIVS = auto()
-    MAXS = auto()       # Maxs: per-element max vs scalar
-    MINS = auto()       # Mins: per-element min vs scalar
-    SHIFT_LEFT = auto() # ShiftLeft: logical left-shift by scalar count
-    SHIFT_RIGHT = auto()# ShiftRight: right-shift by scalar count
-    AXPY = auto()       # Axpy: dst += alpha * src  attrs: {'alpha': float}
+    MAXS = auto()
+    MINS = auto()
+    ANDS = auto()         # Ands: per-element AND with scalar
+    ORS = auto()          # Ors: per-element OR with scalar
+    SHIFT_LEFT = auto()
+    SHIFT_RIGHT = auto()
+    # 3-input in-place fused ops (dst, src0, src1) — dst is accumulator AND output
+    AXPY = auto()         # Axpy: dst += alpha * src  attrs: {'alpha': float}
+    MUL_ADD_DST = auto()  # MulAddDst: dst = src0*src1 + dst  inputs: [src0, src1, acc]
+    FUSED_MUL_ADD = auto()# FusedMulAdd: dst = dst*src0 + src1  inputs: [acc, src0, src1]
+    MUL_ADD_RELU = auto() # MulAddRelu: relu(dst*src0+src1)  inputs: [acc, src0, src1]
     # Elementwise unary
     RELU = auto()
     SQRT = auto()
     EXP = auto()
     LOG = auto()
     ABS = auto()
-    NEG = auto()
+    NEG = auto()          # Expanded in codegen to Muls(dst, src, -1, len)
     TANH = auto()
     SIGMOID = auto()
     SIN = auto()
@@ -44,21 +57,26 @@ class OpKind(Enum):
     SILU = auto()
     LEAKY_RELU = auto()   # attrs: {'alpha': float}
     RSQRT = auto()
-    LOGICAL_NOT = auto()  # bitwise NOT
-    # Elementwise binary (tensor × tensor, result shape = max of shapes)
-    MAXIMUM = auto()      # element-wise max (distinct from ReduceMax)
-    MINIMUM = auto()      # element-wise min (distinct from ReduceMin)
-    LOGICAL_AND = auto()  # bitwise AND
-    LOGICAL_OR = auto()   # bitwise OR
+    LOGICAL_NOT = auto()
+    # Elementwise binary (tensor × tensor)
+    MAXIMUM = auto()
+    MINIMUM = auto()
+    LOGICAL_AND = auto()
+    LOGICAL_OR = auto()
+    # Compare and select
+    COMPARE = auto()      # Compare(dst, x, y, mode, len) → bit mask  attrs: {'mode': str}
+    COMPARES = auto()     # Compares(dst, x, scalar, mode, len)  attrs: {'scalar_value', 'mode'}
+    SELECT = auto()       # Select(dst, src0, src1, mask, len)  inputs: [src0, src1, mask]
     # Type conversion
-    CAST = auto()   # attrs: {'target_dtype': str}
+    CAST = auto()         # attrs: {'target_dtype': str}
+    # Data fill / index
+    DUPLICATE = auto()    # attrs: {'fill_value': float}
+    CREATE_VEC_INDEX = auto()  # attrs: {'start': int/float}
     # Reduction
     REDUCE_SUM = auto()   # attrs: {'axis': int, 'keepdims': bool}
     REDUCE_MAX = auto()
     REDUCE_MIN = auto()
-    REDUCE_MEAN = auto()
-    # Data movement
-    DUPLICATE = auto()  # Duplicate: fill local tensor with scalar  attrs: {'fill_value': float}
+    REDUCE_MEAN = auto()  # high-level API; may not exist on all hardware
     # MatMul (cube core)
     MATMUL = auto()
 

@@ -8,10 +8,14 @@ from ascend_transpiler.ops.mappings import (
     AXPY_OPS,
     BINARY_OPS,
     BINOP_KIND_TO_API,
+    COMPARE_MODE_TO_CONST,
+    COMPARE_OPS,
     DTYPE_TO_CPP,
     DUPLICATE_OPS,
     ELEMENTWISE_BINARY_KIND_TO_API,
     ELEMENTWISE_BINARY_OPS,
+    INPLACE_TERNARY_KIND_TO_API,
+    INPLACE_TERNARY_OPS,
     PARAMETERIZED_UNARY_OPS,
     REDUCE_KIND_TO_API,
     SCALAR_BINOP_KIND_TO_API,
@@ -53,10 +57,10 @@ def _local_name(var: str) -> str:
 
 
 def _build_compute_statements(ir: OperatorIR) -> list[str]:
-    """Render each IR node as one or two C++ statements for Compute()."""
+    """Render each IR node as one or more C++ statements for Compute()."""
     stmts: list[str] = []
     output_name = ir.outputs[0].name if ir.outputs else "z"
-    input_names = {t.name for t in ir.inputs}
+    primary_dtype = ir.inputs[0].dtype if ir.inputs else "float16"
 
     for node in ir.nodes:
         out_var = node.outputs[0] if node.outputs else output_name
@@ -73,7 +77,7 @@ def _build_compute_statements(ir: OperatorIR) -> list[str]:
             api = SCALAR_BINOP_KIND_TO_API[node.kind]
             src = _local_name(node.inputs[0])
             scalar = node.attrs.get("scalar_value", 0)
-            dtype = ir.var_types.get(node.inputs[0], "float16")
+            dtype = ir.var_types.get(node.inputs[0], primary_dtype)
             cpp_type = DTYPE_TO_CPP.get(dtype, "half")
             stmts.append(f"{api}({out_local}, {src}, ({cpp_type}){scalar}, {tile_len});")
 
@@ -81,9 +85,16 @@ def _build_compute_statements(ir: OperatorIR) -> list[str]:
             api = UNOP_KIND_TO_API[node.kind]
             src = _local_name(node.inputs[0])
             alpha = node.attrs.get("alpha", 0.01)
-            dtype = ir.var_types.get(node.inputs[0], "float16")
+            dtype = ir.var_types.get(node.inputs[0], primary_dtype)
             cpp_type = DTYPE_TO_CPP.get(dtype, "half")
             stmts.append(f"{api}({out_local}, {src}, ({cpp_type}){alpha}, {tile_len});")
+
+        elif node.kind == OpKind.NEG:
+            # Neg is not in the AscendC basic API; expand to Muls(dst, src, -1, len)
+            src = _local_name(node.inputs[0])
+            dtype = ir.var_types.get(node.inputs[0], primary_dtype)
+            cpp_type = DTYPE_TO_CPP.get(dtype, "half")
+            stmts.append(f"Muls({out_local}, {src}, ({cpp_type})-1, {tile_len});")
 
         elif node.kind in UNARY_OPS:
             api = UNOP_KIND_TO_API[node.kind]
@@ -98,23 +109,67 @@ def _build_compute_statements(ir: OperatorIR) -> list[str]:
 
         elif node.kind == OpKind.CAST:
             src = _local_name(node.inputs[0])
-            target_dtype = node.attrs.get("target_dtype", "float32")
-            cpp_type = DTYPE_TO_CPP.get(target_dtype, "float")
             stmts.append(f"Cast({out_local}, {src}, RoundMode::CAST_NONE, {tile_len});")
+
+        elif node.kind == OpKind.MUL_CAST:
+            lhs = _local_name(node.inputs[0])
+            rhs = _local_name(node.inputs[1])
+            stmts.append(f"MulCast({out_local}, {lhs}, {rhs}, {tile_len});")
 
         elif node.kind in AXPY_OPS:
             src = _local_name(node.inputs[0])
             dst = _local_name(node.inputs[1])
             alpha = node.attrs.get("alpha", 1.0)
-            dtype = ir.var_types.get(node.inputs[0], "float16")
+            dtype = ir.var_types.get(node.inputs[0], primary_dtype)
             cpp_type = DTYPE_TO_CPP.get(dtype, "half")
             stmts.append(f"Axpy({dst}, {src}, ({cpp_type}){alpha}, {tile_len});")
 
+        elif node.kind in INPLACE_TERNARY_OPS:
+            # MulAddDst / FusedMulAdd / MulAddRelu: dst is inputs[2] (in-place accumulator).
+            # We copy acc → out first, then run the in-place op on out.
+            api = INPLACE_TERNARY_KIND_TO_API[node.kind]
+            src0 = _local_name(node.inputs[0])
+            src1 = _local_name(node.inputs[1])
+            acc  = _local_name(node.inputs[2])
+            dtype = ir.var_types.get(node.inputs[2], primary_dtype)
+            cpp_type = DTYPE_TO_CPP.get(dtype, "half")
+            # Copy acc into out (Adds with 0 is the idiomatic UB-to-UB copy)
+            stmts.append(f"Adds({out_local}, {acc}, ({cpp_type})0, {tile_len});")
+            stmts.append(f"{api}({out_local}, {src0}, {src1}, {tile_len});")
+
+        elif node.kind == OpKind.COMPARE:
+            lhs = _local_name(node.inputs[0])
+            rhs = _local_name(node.inputs[1])
+            mode = node.attrs.get("mode", "eq")
+            mode_const = COMPARE_MODE_TO_CONST.get(mode, "CMPMODE_EQ")
+            stmts.append(f"Compare({out_local}, {lhs}, {rhs}, {mode_const}, {tile_len});")
+
+        elif node.kind == OpKind.COMPARES:
+            src = _local_name(node.inputs[0])
+            scalar = node.attrs.get("scalar_value", 0)
+            mode = node.attrs.get("mode", "eq")
+            mode_const = COMPARE_MODE_TO_CONST.get(mode, "CMPMODE_EQ")
+            dtype = ir.var_types.get(node.inputs[0], primary_dtype)
+            cpp_type = DTYPE_TO_CPP.get(dtype, "half")
+            stmts.append(
+                f"Compares({out_local}, {src}, ({cpp_type}){scalar}, {mode_const}, {tile_len});"
+            )
+
+        elif node.kind == OpKind.SELECT:
+            src0 = _local_name(node.inputs[0])
+            src1 = _local_name(node.inputs[1])
+            mask = _local_name(node.inputs[2])
+            stmts.append(f"Select({out_local}, {src0}, {src1}, {mask}, {tile_len});")
+
         elif node.kind in DUPLICATE_OPS:
             fill = node.attrs.get("fill_value", 0.0)
-            dtype = ir.var_types.get(out_var, ir.inputs[0].dtype if ir.inputs else "float16")
+            dtype = ir.var_types.get(out_var, primary_dtype)
             cpp_type = DTYPE_TO_CPP.get(dtype, "half")
             stmts.append(f"Duplicate({out_local}, ({cpp_type}){fill}, {tile_len});")
+
+        elif node.kind == OpKind.CREATE_VEC_INDEX:
+            start = node.attrs.get("start", 0)
+            stmts.append(f"CreateVecIndex({out_local}, ({DTYPE_TO_CPP.get('int32','int32_t')}){start}, {tile_len});")
 
         else:
             from ascend_transpiler.exceptions import UnsupportedOperationError
