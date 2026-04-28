@@ -9,6 +9,18 @@ from ascend_transpiler.dsl.decorators import (
     abs,
     tanh,
     sigmoid,
+    sin,
+    cos,
+    floor,
+    ceil,
+    round,
+    sign,
+    reciprocal,
+    gelu,
+    silu,
+    leaky_relu,
+    maximum,
+    minimum,
     cast,
     matmul,
     reduce_sum,
@@ -38,8 +50,13 @@ from ascend_transpiler.transpiler import Transpiler
 __all__ = [
     # Decorators
     "ascend_op", "tile",
-    # Primitives
+    # Primitives — unary
     "relu", "sqrt", "exp", "log", "abs", "tanh", "sigmoid",
+    "sin", "cos", "floor", "ceil", "round", "sign", "reciprocal",
+    "gelu", "silu", "leaky_relu",
+    # Primitives — binary elementwise
+    "maximum", "minimum",
+    # Special
     "cast", "matmul",
     "reduce_sum", "reduce_max", "reduce_min", "reduce_mean",
     # Types
