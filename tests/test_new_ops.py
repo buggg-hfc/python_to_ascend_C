@@ -194,24 +194,24 @@ def leaky_op(x: Tensor[float32]) -> Tensor[float32]:
     assert "0.1" in cpp
 
 
-def test_maximum_codegen_emits_maximum_api():
+def test_maximum_codegen_emits_max_api():
     src = """
 @ascend_op
 def max_op(x: Tensor[float16], y: Tensor[float16]) -> Tensor[float16]:
     return maximum(x, y)
 """
     files = _generate(src)
-    assert "Maximum(zLocal, xLocal, yLocal, this->tileLength);" in files["max_op.cpp"]
+    assert "Max(zLocal, xLocal, yLocal, this->tileLength);" in files["max_op.cpp"]
 
 
-def test_minimum_codegen_emits_minimum_api():
+def test_minimum_codegen_emits_min_api():
     src = """
 @ascend_op
 def min_op(x: Tensor[float16], y: Tensor[float16]) -> Tensor[float16]:
     return minimum(x, y)
 """
     files = _generate(src)
-    assert "Minimum(zLocal, xLocal, yLocal, this->tileLength);" in files["min_op.cpp"]
+    assert "Min(zLocal, xLocal, yLocal, this->tileLength);" in files["min_op.cpp"]
 
 
 def test_clamp_fused_uses_maximum_then_minimum():
@@ -223,8 +223,8 @@ def clamp_op(x: Tensor[float16], lo: Tensor[float16], hi: Tensor[float16]) -> Te
 """
     files = _generate(src)
     cpp = files["clamp_op.cpp"]
-    assert "Maximum(" in cpp
-    assert "Minimum(" in cpp
+    assert "Max(" in cpp
+    assert "Min(" in cpp
 
 
 # ---------------------------------------------------------------------------
@@ -287,3 +287,274 @@ def gelu_op(x: Tensor[float16]) -> Tensor[float16]:
     for content in files.values():
         assert "{{" not in content
         assert "}}" not in content
+
+
+# ---------------------------------------------------------------------------
+# Phase 0: API naming fixes — log→Ln, maximum→Max, minimum→Min
+# ---------------------------------------------------------------------------
+
+def test_log_codegen_emits_ln_api():
+    src = """
+@ascend_op
+def log_op(x: Tensor[float32]) -> Tensor[float32]:
+    return log(x)
+"""
+    files = _generate(src)
+    assert "Ln(zLocal, xLocal, this->tileLength);" in files["log_op.cpp"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: New unary ops — rsqrt, logical_not
+# ---------------------------------------------------------------------------
+
+def test_rsqrt_op_kind():
+    src = _src("""
+@ascend_op
+def rsqrt_op(x: Tensor[float32]) -> Tensor[float32]:
+    return rsqrt(x)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.RSQRT
+
+
+def test_rsqrt_codegen_emits_rsqrt_api():
+    src = """
+@ascend_op
+def rsqrt_op(x: Tensor[float32]) -> Tensor[float32]:
+    return rsqrt(x)
+"""
+    files = _generate(src)
+    assert "Rsqrt(zLocal, xLocal, this->tileLength);" in files["rsqrt_op.cpp"]
+
+
+def test_logical_not_op_kind():
+    src = _src("""
+@ascend_op
+def not_op(x: Tensor[uint8]) -> Tensor[uint8]:
+    return logical_not(x)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.LOGICAL_NOT
+
+
+def test_logical_not_codegen_emits_not_api():
+    src = """
+@ascend_op
+def not_op(x: Tensor[uint8]) -> Tensor[uint8]:
+    return logical_not(x)
+"""
+    files = _generate(src)
+    assert "Not(zLocal, xLocal, this->tileLength);" in files["not_op.cpp"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Logical binary ops — logical_and, logical_or, & | operators
+# ---------------------------------------------------------------------------
+
+def test_logical_and_op_kind():
+    src = _src("""
+@ascend_op
+def and_op(x: Tensor[uint8], y: Tensor[uint8]) -> Tensor[uint8]:
+    return logical_and(x, y)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.LOGICAL_AND
+
+
+def test_logical_or_op_kind():
+    src = _src("""
+@ascend_op
+def or_op(x: Tensor[uint8], y: Tensor[uint8]) -> Tensor[uint8]:
+    return logical_or(x, y)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.LOGICAL_OR
+
+
+def test_logical_and_codegen_emits_and_api():
+    src = """
+@ascend_op
+def and_op(x: Tensor[uint8], y: Tensor[uint8]) -> Tensor[uint8]:
+    return logical_and(x, y)
+"""
+    files = _generate(src)
+    assert "And(zLocal, xLocal, yLocal, this->tileLength);" in files["and_op.cpp"]
+
+
+def test_logical_or_codegen_emits_or_api():
+    src = """
+@ascend_op
+def or_op(x: Tensor[uint8], y: Tensor[uint8]) -> Tensor[uint8]:
+    return logical_or(x, y)
+"""
+    files = _generate(src)
+    assert "Or(zLocal, xLocal, yLocal, this->tileLength);" in files["or_op.cpp"]
+
+
+def test_bitand_operator_maps_to_logical_and():
+    src = _src("""
+@ascend_op
+def and_op(x: Tensor[uint8], y: Tensor[uint8]) -> Tensor[uint8]:
+    return x & y
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.LOGICAL_AND
+
+
+def test_bitor_operator_maps_to_logical_or():
+    src = _src("""
+@ascend_op
+def or_op(x: Tensor[uint8], y: Tensor[uint8]) -> Tensor[uint8]:
+    return x | y
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.LOGICAL_OR
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Scalar shifts — shift_left, shift_right
+# ---------------------------------------------------------------------------
+
+def test_shift_left_op_kind():
+    src = _src("""
+@ascend_op
+def shl_op(x: Tensor[int32]) -> Tensor[int32]:
+    return shift_left(x, 2)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.SHIFT_LEFT
+    assert ir.nodes[0].attrs["scalar_value"] == 2
+
+
+def test_shift_right_op_kind():
+    src = _src("""
+@ascend_op
+def shr_op(x: Tensor[int32]) -> Tensor[int32]:
+    return shift_right(x, 3)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.SHIFT_RIGHT
+    assert ir.nodes[0].attrs["scalar_value"] == 3
+
+
+def test_shift_left_codegen_emits_shiftleft_api():
+    src = """
+@ascend_op
+def shl_op(x: Tensor[int32]) -> Tensor[int32]:
+    return shift_left(x, 2)
+"""
+    files = _generate(src)
+    assert "ShiftLeft(zLocal, xLocal, (int32_t)2, this->tileLength);" in files["shl_op.cpp"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Axpy
+# ---------------------------------------------------------------------------
+
+def test_axpy_op_kind():
+    src = _src("""
+@ascend_op
+def axpy_op(x: Tensor[float32], y: Tensor[float32]) -> Tensor[float32]:
+    return axpy(x, y, 0.5)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.AXPY
+    assert abs(ir.nodes[0].attrs["alpha"] - 0.5) < 1e-9
+
+
+def test_axpy_codegen_emits_axpy_api():
+    src = """
+@ascend_op
+def axpy_op(x: Tensor[float32], y: Tensor[float32]) -> Tensor[float32]:
+    return axpy(x, y, 2.0)
+"""
+    files = _generate(src)
+    cpp = files["axpy_op.cpp"]
+    assert "Axpy(" in cpp
+    assert "2.0" in cpp
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Scalar clamp (Maxs + Mins)
+# ---------------------------------------------------------------------------
+
+def test_maxs_op_kind():
+    src = _src("""
+@ascend_op
+def maxs_op(x: Tensor[float32]) -> Tensor[float32]:
+    return maxs(x, 0.0)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.MAXS
+    assert ir.nodes[0].attrs["scalar_value"] == 0.0
+
+
+def test_mins_op_kind():
+    src = _src("""
+@ascend_op
+def mins_op(x: Tensor[float32]) -> Tensor[float32]:
+    return mins(x, 1.0)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.MINS
+
+
+def test_maxs_codegen_emits_maxs_api():
+    src = """
+@ascend_op
+def maxs_op(x: Tensor[float32]) -> Tensor[float32]:
+    return maxs(x, 0.0)
+"""
+    files = _generate(src)
+    assert "Maxs(zLocal, xLocal, (float)0.0, this->tileLength);" in files["maxs_op.cpp"]
+
+
+def test_clamp_expands_to_maxs_and_mins():
+    src = _src("""
+@ascend_op
+def clamp_op(x: Tensor[float32]) -> Tensor[float32]:
+    return clamp(x, 0.0, 1.0)
+""")
+    [ir] = analyze_file(src)
+    assert len(ir.nodes) == 2
+    assert ir.nodes[0].kind == OpKind.MAXS
+    assert ir.nodes[0].attrs["scalar_value"] == 0.0
+    assert ir.nodes[1].kind == OpKind.MINS
+    assert ir.nodes[1].attrs["scalar_value"] == 1.0
+
+
+def test_clamp_codegen_emits_maxs_and_mins():
+    src = """
+@ascend_op
+def clamp_op(x: Tensor[float32]) -> Tensor[float32]:
+    return clamp(x, 0.0, 1.0)
+"""
+    files = _generate(src)
+    cpp = files["clamp_op.cpp"]
+    assert "Maxs(" in cpp
+    assert "Mins(" in cpp
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Duplicate
+# ---------------------------------------------------------------------------
+
+def test_duplicate_op_kind():
+    src = _src("""
+@ascend_op
+def dup_op(x: Tensor[float32]) -> Tensor[float32]:
+    return duplicate(x, 0.0)
+""")
+    [ir] = analyze_file(src)
+    assert ir.nodes[0].kind == OpKind.DUPLICATE
+    assert ir.nodes[0].attrs["fill_value"] == 0.0
+
+
+def test_duplicate_codegen_emits_duplicate_api():
+    src = """
+@ascend_op
+def dup_op(x: Tensor[float32]) -> Tensor[float32]:
+    return duplicate(x, 1.0)
+"""
+    files = _generate(src)
+    assert "Duplicate(zLocal, (float)1.0, this->tileLength);" in files["dup_op.cpp"]

@@ -19,8 +19,19 @@ from ascend_transpiler.dsl.decorators import (
     gelu,
     silu,
     leaky_relu,
+    rsqrt,
+    logical_not,
     maximum,
     minimum,
+    logical_and,
+    logical_or,
+    maxs,
+    mins,
+    shift_left,
+    shift_right,
+    axpy,
+    duplicate,
+    clamp,
     cast,
     matmul,
     reduce_sum,
@@ -53,9 +64,13 @@ __all__ = [
     # Primitives — unary
     "relu", "sqrt", "exp", "log", "abs", "tanh", "sigmoid",
     "sin", "cos", "floor", "ceil", "round", "sign", "reciprocal",
-    "gelu", "silu", "leaky_relu",
-    # Primitives — binary elementwise
-    "maximum", "minimum",
+    "gelu", "silu", "leaky_relu", "rsqrt", "logical_not",
+    # Primitives — binary elementwise tensor×tensor
+    "maximum", "minimum", "logical_and", "logical_or",
+    # Primitives — scalar binary (tensor×scalar)
+    "maxs", "mins", "shift_left", "shift_right",
+    # Primitives — multi-input / special
+    "axpy", "duplicate", "clamp",
     # Special
     "cast", "matmul",
     "reduce_sum", "reduce_max", "reduce_min", "reduce_mean",

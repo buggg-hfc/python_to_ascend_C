@@ -5,9 +5,11 @@ import jinja2
 
 from ascend_transpiler.ir.operator_ir import IRNode, OpKind, OperatorIR
 from ascend_transpiler.ops.mappings import (
+    AXPY_OPS,
     BINARY_OPS,
     BINOP_KIND_TO_API,
     DTYPE_TO_CPP,
+    DUPLICATE_OPS,
     ELEMENTWISE_BINARY_KIND_TO_API,
     ELEMENTWISE_BINARY_OPS,
     PARAMETERIZED_UNARY_OPS,
@@ -99,6 +101,20 @@ def _build_compute_statements(ir: OperatorIR) -> list[str]:
             target_dtype = node.attrs.get("target_dtype", "float32")
             cpp_type = DTYPE_TO_CPP.get(target_dtype, "float")
             stmts.append(f"Cast({out_local}, {src}, RoundMode::CAST_NONE, {tile_len});")
+
+        elif node.kind in AXPY_OPS:
+            src = _local_name(node.inputs[0])
+            dst = _local_name(node.inputs[1])
+            alpha = node.attrs.get("alpha", 1.0)
+            dtype = ir.var_types.get(node.inputs[0], "float16")
+            cpp_type = DTYPE_TO_CPP.get(dtype, "half")
+            stmts.append(f"Axpy({dst}, {src}, ({cpp_type}){alpha}, {tile_len});")
+
+        elif node.kind in DUPLICATE_OPS:
+            fill = node.attrs.get("fill_value", 0.0)
+            dtype = ir.var_types.get(out_var, ir.inputs[0].dtype if ir.inputs else "float16")
+            cpp_type = DTYPE_TO_CPP.get(dtype, "half")
+            stmts.append(f"Duplicate({out_local}, ({cpp_type}){fill}, {tile_len});")
 
         else:
             from ascend_transpiler.exceptions import UnsupportedOperationError

@@ -19,6 +19,11 @@ class OpKind(Enum):
     SUBS = auto()
     MULS = auto()
     DIVS = auto()
+    MAXS = auto()       # Maxs: per-element max vs scalar
+    MINS = auto()       # Mins: per-element min vs scalar
+    SHIFT_LEFT = auto() # ShiftLeft: logical left-shift by scalar count
+    SHIFT_RIGHT = auto()# ShiftRight: right-shift by scalar count
+    AXPY = auto()       # Axpy: dst += alpha * src  attrs: {'alpha': float}
     # Elementwise unary
     RELU = auto()
     SQRT = auto()
@@ -38,9 +43,13 @@ class OpKind(Enum):
     GELU = auto()
     SILU = auto()
     LEAKY_RELU = auto()   # attrs: {'alpha': float}
+    RSQRT = auto()
+    LOGICAL_NOT = auto()  # bitwise NOT
     # Elementwise binary (tensor × tensor, result shape = max of shapes)
     MAXIMUM = auto()      # element-wise max (distinct from ReduceMax)
     MINIMUM = auto()      # element-wise min (distinct from ReduceMin)
+    LOGICAL_AND = auto()  # bitwise AND
+    LOGICAL_OR = auto()   # bitwise OR
     # Type conversion
     CAST = auto()   # attrs: {'target_dtype': str}
     # Reduction
@@ -48,6 +57,8 @@ class OpKind(Enum):
     REDUCE_MAX = auto()
     REDUCE_MIN = auto()
     REDUCE_MEAN = auto()
+    # Data movement
+    DUPLICATE = auto()  # Duplicate: fill local tensor with scalar  attrs: {'fill_value': float}
     # MatMul (cube core)
     MATMUL = auto()
 

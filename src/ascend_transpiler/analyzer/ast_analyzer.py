@@ -28,9 +28,12 @@ from ascend_transpiler.ir.operator_ir import (
     TilingConfig,
 )
 from ascend_transpiler.ops.mappings import (
+    AXPY_OPS,
     BINOP_AST_TO_KIND,
     BINOP_AST_TO_SCALAR_KIND,
     CALL_NAME_TO_KIND,
+    DUPLICATE_OPS,
+    ELEMENTWISE_BINARY_OPS,
     MATMUL_OPS,
     REDUCTION_OPS,
     SUPPORTED_DTYPES,
@@ -223,6 +226,9 @@ class ASTAnalyzer:
         if isinstance(node, ast.BinOp):
             return self._lower_binop(node, out)
 
+        if isinstance(node, ast.BoolOp):
+            return self._lower_boolop(node, out)
+
         if isinstance(node, ast.Call):
             return self._lower_call(node, out)
 
@@ -234,6 +240,28 @@ class ASTAnalyzer:
         raise UnsupportedOperationError(
             ast.dump(node), getattr(node, "lineno", None)
         )
+
+    def _lower_boolop(self, node: ast.BoolOp, out: str) -> str:
+        """Lower `x and y` / `x or y` (Python BoolOp) to LOGICAL_AND/OR."""
+        if isinstance(node.op, ast.And):
+            kind = OpKind.LOGICAL_AND
+        elif isinstance(node.op, ast.Or):
+            kind = OpKind.LOGICAL_OR
+        else:
+            raise UnsupportedOperationError(
+                type(node.op).__name__, getattr(node, "lineno", None)
+            )
+        # Chain multiple values: a and b and c → AND(AND(a, b), c)
+        lhs = self._lower_expr(node.values[0])
+        for val in node.values[1:]:
+            rhs = self._lower_expr(val)
+            tmp = self._fresh_var()
+            self._emit_node(kind, [lhs, rhs], [tmp], node)
+            lhs = tmp
+        # Last result goes into out
+        if self._nodes and self._nodes[-1].outputs == [lhs]:
+            self._nodes[-1].outputs[-1] = out
+        return out
 
     def _lower_binop(self, node: ast.BinOp, out: str) -> str:
         lhs_is_scalar = isinstance(node.left, ast.Constant)
@@ -274,6 +302,28 @@ class ASTAnalyzer:
                 ast.dump(node.func), getattr(node, "lineno", None)
             )
         fname = node.func.id
+
+        # clamp(x, lo, hi) is a convenience that expands to MAXS + MINS; handle before kind lookup
+        if fname == "clamp":
+            if len(node.args) < 3:
+                raise UnsupportedOperationError(
+                    "clamp requires 3 arguments: clamp(x, lo, hi)",
+                    getattr(node, "lineno", None),
+                )
+            src = self._lower_expr(node.args[0])
+            lo_node, hi_node = node.args[1], node.args[2]
+            if not isinstance(lo_node, ast.Constant) or not isinstance(hi_node, ast.Constant):
+                raise UnsupportedOperationError(
+                    "clamp: lo and hi must be scalar constants",
+                    getattr(node, "lineno", None),
+                )
+            lo_val = float(lo_node.value)
+            hi_val = float(hi_node.value)
+            tmp = self._fresh_var()
+            self._emit_node(OpKind.MAXS, [src], [tmp], node, {"scalar_value": lo_val})
+            self._emit_node(OpKind.MINS, [tmp], [out], node, {"scalar_value": hi_val})
+            return out
+
         kind = CALL_NAME_TO_KIND.get(fname)
         if kind is None:
             raise UnsupportedOperationError(fname, getattr(node, "lineno", None))
@@ -299,10 +349,55 @@ class ASTAnalyzer:
             self._emit_node(kind, [src], [out], node, {"alpha": alpha})
             return out
 
-        if kind in {OpKind.MAXIMUM, OpKind.MINIMUM}:
+        if kind in ELEMENTWISE_BINARY_OPS:
             lhs = self._lower_expr(node.args[0])
             rhs = self._lower_expr(node.args[1])
             self._emit_node(kind, [lhs, rhs], [out], node)
+            return out
+
+        if kind in {OpKind.MAXS, OpKind.MINS}:
+            src = self._lower_expr(node.args[0])
+            if not (len(node.args) >= 2 and isinstance(node.args[1], ast.Constant)):
+                raise UnsupportedOperationError(
+                    f"{fname}: second argument must be a scalar constant",
+                    getattr(node, "lineno", None),
+                )
+            scalar_val = float(node.args[1].value)
+            self._emit_node(kind, [src], [out], node, {"scalar_value": scalar_val})
+            return out
+
+        if kind in {OpKind.SHIFT_LEFT, OpKind.SHIFT_RIGHT}:
+            src = self._lower_expr(node.args[0])
+            if not (len(node.args) >= 2 and isinstance(node.args[1], ast.Constant)):
+                raise UnsupportedOperationError(
+                    f"{fname}: second argument must be a scalar constant",
+                    getattr(node, "lineno", None),
+                )
+            scalar_val = node.args[1].value
+            self._emit_node(kind, [src], [out], node, {"scalar_value": scalar_val})
+            return out
+
+        if kind == OpKind.AXPY:
+            x = self._lower_expr(node.args[0])
+            y = self._lower_expr(node.args[1])
+            alpha = 1.0
+            if len(node.args) >= 3 and isinstance(node.args[2], ast.Constant):
+                alpha = float(node.args[2].value)
+            for kw in node.keywords:
+                if kw.arg == "alpha" and isinstance(kw.value, ast.Constant):
+                    alpha = float(kw.value.value)
+            self._emit_node(kind, [x, y], [out], node, {"alpha": alpha})
+            return out
+
+        if kind == OpKind.DUPLICATE:
+            fill_value = 0.0
+            if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+                fill_value = float(node.args[1].value)
+            for kw in node.keywords:
+                if kw.arg == "value" and isinstance(kw.value, ast.Constant):
+                    fill_value = float(kw.value.value)
+            src_args = [self._lower_expr(node.args[0])] if node.args else []
+            self._emit_node(kind, src_args, [out], node, {"fill_value": fill_value})
             return out
 
         if kind in REDUCTION_OPS:
