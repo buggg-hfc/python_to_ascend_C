@@ -28,6 +28,19 @@ class OpKind(Enum):
     NEG = auto()
     TANH = auto()
     SIGMOID = auto()
+    SIN = auto()
+    COS = auto()
+    FLOOR = auto()
+    CEIL = auto()
+    ROUND = auto()
+    SIGN = auto()
+    RECIPROCAL = auto()
+    GELU = auto()
+    SILU = auto()
+    LEAKY_RELU = auto()   # attrs: {'alpha': float}
+    # Elementwise binary (tensor × tensor, result shape = max of shapes)
+    MAXIMUM = auto()      # element-wise max (distinct from ReduceMax)
+    MINIMUM = auto()      # element-wise min (distinct from ReduceMin)
     # Type conversion
     CAST = auto()   # attrs: {'target_dtype': str}
     # Reduction

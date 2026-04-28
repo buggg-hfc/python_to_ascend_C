@@ -15,9 +15,9 @@ public:
     __aicore__ inline {{ class_name }}() {}
 
     __aicore__ inline void Init(
-{%- for t in inputs %}
+{% for t in inputs %}
         GM_ADDR {{ t.name }},
-{%- endfor %}
+{% endfor %}
         GM_ADDR {{ output.name }},
         GM_ADDR workspace, GM_ADDR tiling)
     {
@@ -116,16 +116,16 @@ private:
 };
 
 extern "C" __global__ __aicore__ void {{ func_name }}(
-{%- for t in inputs %}
+{% for t in inputs %}
     GM_ADDR {{ t.name }},
-{%- endfor %}
+{% endfor %}
     GM_ADDR {{ output.name }}, GM_ADDR workspace, GM_ADDR tiling)
 {
     {{ class_name }} op;
     op.Init(
-{%- for t in inputs %}
+{% for t in inputs %}
         {{ t.name }},
-{%- endfor %}
+{% endfor %}
         {{ output.name }}, workspace, tiling);
     op.Process();
 }

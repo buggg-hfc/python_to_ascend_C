@@ -78,6 +78,18 @@ CALL_NAME_TO_KIND: dict[str, OpKind] = {
     "abs": OpKind.ABS,
     "tanh": OpKind.TANH,
     "sigmoid": OpKind.SIGMOID,
+    "sin": OpKind.SIN,
+    "cos": OpKind.COS,
+    "floor": OpKind.FLOOR,
+    "ceil": OpKind.CEIL,
+    "round": OpKind.ROUND,
+    "sign": OpKind.SIGN,
+    "reciprocal": OpKind.RECIPROCAL,
+    "gelu": OpKind.GELU,
+    "silu": OpKind.SILU,
+    "leaky_relu": OpKind.LEAKY_RELU,
+    "maximum": OpKind.MAXIMUM,
+    "minimum": OpKind.MINIMUM,
     "cast": OpKind.CAST,
     "matmul": OpKind.MATMUL,
     "reduce_sum": OpKind.REDUCE_SUM,
@@ -86,8 +98,6 @@ CALL_NAME_TO_KIND: dict[str, OpKind] = {
     "reduce_mean": OpKind.REDUCE_MEAN,
     # common aliases
     "sum": OpKind.REDUCE_SUM,
-    "max": OpKind.REDUCE_MAX,
-    "min": OpKind.REDUCE_MIN,
     "mean": OpKind.REDUCE_MEAN,
 }
 
@@ -120,6 +130,25 @@ UNOP_KIND_TO_API: dict[OpKind, str] = {
     OpKind.NEG: "Neg",
     OpKind.TANH: "Tanh",
     OpKind.SIGMOID: "Sigmoid",
+    OpKind.SIN: "Sin",
+    OpKind.COS: "Cos",
+    OpKind.FLOOR: "Floor",
+    OpKind.CEIL: "Ceil",
+    OpKind.ROUND: "Round",
+    OpKind.SIGN: "Sign",
+    OpKind.RECIPROCAL: "Reciprocal",
+    OpKind.GELU: "Gelu",
+    OpKind.SILU: "Silu",
+    OpKind.LEAKY_RELU: "LeakyRelu",
+}
+
+BINOP_WITH_PARAM_KIND_TO_API: dict[OpKind, str] = {
+    OpKind.LEAKY_RELU: "LeakyRelu",  # LeakyRelu(dst, src, alpha, len)
+}
+
+ELEMENTWISE_BINARY_KIND_TO_API: dict[OpKind, str] = {
+    OpKind.MAXIMUM: "Maximum",
+    OpKind.MINIMUM: "Minimum",
 }
 
 REDUCE_KIND_TO_API: dict[OpKind, str] = {
@@ -135,3 +164,6 @@ MATMUL_OPS: frozenset[OpKind] = frozenset({OpKind.MATMUL})
 SCALAR_OPS: frozenset[OpKind] = frozenset(SCALAR_BINOP_KIND_TO_API)
 UNARY_OPS: frozenset[OpKind] = frozenset(UNOP_KIND_TO_API)
 BINARY_OPS: frozenset[OpKind] = frozenset(BINOP_KIND_TO_API)
+ELEMENTWISE_BINARY_OPS: frozenset[OpKind] = frozenset(ELEMENTWISE_BINARY_KIND_TO_API)
+# Ops with an extra scalar parameter (alpha, etc.)
+PARAMETERIZED_UNARY_OPS: frozenset[OpKind] = frozenset({OpKind.LEAKY_RELU})

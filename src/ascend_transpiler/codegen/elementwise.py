@@ -8,6 +8,9 @@ from ascend_transpiler.ops.mappings import (
     BINARY_OPS,
     BINOP_KIND_TO_API,
     DTYPE_TO_CPP,
+    ELEMENTWISE_BINARY_KIND_TO_API,
+    ELEMENTWISE_BINARY_OPS,
+    PARAMETERIZED_UNARY_OPS,
     REDUCE_KIND_TO_API,
     SCALAR_BINOP_KIND_TO_API,
     SCALAR_OPS,
@@ -72,10 +75,24 @@ def _build_compute_statements(ir: OperatorIR) -> list[str]:
             cpp_type = DTYPE_TO_CPP.get(dtype, "half")
             stmts.append(f"{api}({out_local}, {src}, ({cpp_type}){scalar}, {tile_len});")
 
+        elif node.kind in PARAMETERIZED_UNARY_OPS:
+            api = UNOP_KIND_TO_API[node.kind]
+            src = _local_name(node.inputs[0])
+            alpha = node.attrs.get("alpha", 0.01)
+            dtype = ir.var_types.get(node.inputs[0], "float16")
+            cpp_type = DTYPE_TO_CPP.get(dtype, "half")
+            stmts.append(f"{api}({out_local}, {src}, ({cpp_type}){alpha}, {tile_len});")
+
         elif node.kind in UNARY_OPS:
             api = UNOP_KIND_TO_API[node.kind]
             src = _local_name(node.inputs[0])
             stmts.append(f"{api}({out_local}, {src}, {tile_len});")
+
+        elif node.kind in ELEMENTWISE_BINARY_OPS:
+            api = ELEMENTWISE_BINARY_KIND_TO_API[node.kind]
+            lhs = _local_name(node.inputs[0])
+            rhs = _local_name(node.inputs[1])
+            stmts.append(f"{api}({out_local}, {lhs}, {rhs}, {tile_len});")
 
         elif node.kind == OpKind.CAST:
             src = _local_name(node.inputs[0])
@@ -84,7 +101,8 @@ def _build_compute_statements(ir: OperatorIR) -> list[str]:
             stmts.append(f"Cast({out_local}, {src}, RoundMode::CAST_NONE, {tile_len});")
 
         else:
-            stmts.append(f"// Unsupported op: {node.kind}")
+            from ascend_transpiler.exceptions import UnsupportedOperationError
+            raise UnsupportedOperationError(str(node.kind), node.lineno)
 
     return stmts
 

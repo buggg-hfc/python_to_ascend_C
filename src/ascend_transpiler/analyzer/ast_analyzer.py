@@ -211,14 +211,8 @@ class ASTAnalyzer:
         out = out_name or self._fresh_var()
 
         if isinstance(node, ast.Name):
-            # Simple variable reference — no node needed
             if out_name and out_name != node.id:
-                # Emit an identity copy only if we're assigning to a new name
-                self._emit_node(OpKind.RELU, [node.id], [out], node)  # use identity-like
-                # Actually we want a true identity — skip and just alias
-                # Remove the wrongly emitted node
-                self._nodes.pop()
-                # Propagate type
+                # Alias: propagate type without emitting a node
                 self._var_types[out] = self._var_types.get(node.id, self._primary_input_dtype())
             return node.id if not out_name else out
 
@@ -292,6 +286,23 @@ class ASTAnalyzer:
             target_dtype = self._eval_dtype_node(node.args[1], "cast")
             attrs["target_dtype"] = target_dtype
             self._emit_node(kind, [src], [out], node, attrs)
+            return out
+
+        if kind == OpKind.LEAKY_RELU:
+            src = self._lower_expr(node.args[0])
+            alpha = 0.01
+            if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+                alpha = float(node.args[1].value)
+            for kw in node.keywords:
+                if kw.arg == "alpha" and isinstance(kw.value, ast.Constant):
+                    alpha = float(kw.value.value)
+            self._emit_node(kind, [src], [out], node, {"alpha": alpha})
+            return out
+
+        if kind in {OpKind.MAXIMUM, OpKind.MINIMUM}:
+            lhs = self._lower_expr(node.args[0])
+            rhs = self._lower_expr(node.args[1])
+            self._emit_node(kind, [lhs, rhs], [out], node)
             return out
 
         if kind in REDUCTION_OPS:
