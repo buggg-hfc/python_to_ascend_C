@@ -57,6 +57,8 @@ BINOP_AST_TO_KIND: dict[type, OpKind] = {
     ast.FloorDiv: OpKind.FLOORDIV,
     ast.Mod: OpKind.MOD,
     ast.Pow: OpKind.POW,
+    ast.BitAnd: OpKind.LOGICAL_AND,
+    ast.BitOr: OpKind.LOGICAL_OR,
 }
 
 # AST BinOp node → OpKind (tensor × scalar)
@@ -88,8 +90,18 @@ CALL_NAME_TO_KIND: dict[str, OpKind] = {
     "gelu": OpKind.GELU,
     "silu": OpKind.SILU,
     "leaky_relu": OpKind.LEAKY_RELU,
+    "rsqrt": OpKind.RSQRT,
+    "logical_not": OpKind.LOGICAL_NOT,
     "maximum": OpKind.MAXIMUM,
     "minimum": OpKind.MINIMUM,
+    "logical_and": OpKind.LOGICAL_AND,
+    "logical_or": OpKind.LOGICAL_OR,
+    "maxs": OpKind.MAXS,
+    "mins": OpKind.MINS,
+    "shift_left": OpKind.SHIFT_LEFT,
+    "shift_right": OpKind.SHIFT_RIGHT,
+    "axpy": OpKind.AXPY,
+    "duplicate": OpKind.DUPLICATE,
     "cast": OpKind.CAST,
     "matmul": OpKind.MATMUL,
     "reduce_sum": OpKind.REDUCE_SUM,
@@ -119,13 +131,17 @@ SCALAR_BINOP_KIND_TO_API: dict[OpKind, str] = {
     OpKind.SUBS: "Subs",
     OpKind.MULS: "Muls",
     OpKind.DIVS: "Divs",
+    OpKind.MAXS: "Maxs",
+    OpKind.MINS: "Mins",
+    OpKind.SHIFT_LEFT: "ShiftLeft",
+    OpKind.SHIFT_RIGHT: "ShiftRight",
 }
 
 UNOP_KIND_TO_API: dict[OpKind, str] = {
     OpKind.RELU: "Relu",
     OpKind.SQRT: "Sqrt",
     OpKind.EXP: "Exp",
-    OpKind.LOG: "Log",
+    OpKind.LOG: "Ln",          # AscendC basic API: Ln (natural log)
     OpKind.ABS: "Abs",
     OpKind.NEG: "Neg",
     OpKind.TANH: "Tanh",
@@ -140,6 +156,8 @@ UNOP_KIND_TO_API: dict[OpKind, str] = {
     OpKind.GELU: "Gelu",
     OpKind.SILU: "Silu",
     OpKind.LEAKY_RELU: "LeakyRelu",
+    OpKind.RSQRT: "Rsqrt",
+    OpKind.LOGICAL_NOT: "Not",
 }
 
 BINOP_WITH_PARAM_KIND_TO_API: dict[OpKind, str] = {
@@ -147,8 +165,10 @@ BINOP_WITH_PARAM_KIND_TO_API: dict[OpKind, str] = {
 }
 
 ELEMENTWISE_BINARY_KIND_TO_API: dict[OpKind, str] = {
-    OpKind.MAXIMUM: "Maximum",
-    OpKind.MINIMUM: "Minimum",
+    OpKind.MAXIMUM: "Max",     # AscendC basic API: Max
+    OpKind.MINIMUM: "Min",     # AscendC basic API: Min
+    OpKind.LOGICAL_AND: "And",
+    OpKind.LOGICAL_OR: "Or",
 }
 
 REDUCE_KIND_TO_API: dict[OpKind, str] = {
@@ -167,3 +187,9 @@ BINARY_OPS: frozenset[OpKind] = frozenset(BINOP_KIND_TO_API)
 ELEMENTWISE_BINARY_OPS: frozenset[OpKind] = frozenset(ELEMENTWISE_BINARY_KIND_TO_API)
 # Ops with an extra scalar parameter (alpha, etc.)
 PARAMETERIZED_UNARY_OPS: frozenset[OpKind] = frozenset({OpKind.LEAKY_RELU})
+# Axpy: dst += alpha * src  (2 tensor inputs + 1 scalar attr)
+AXPY_OPS: frozenset[OpKind] = frozenset({OpKind.AXPY})
+# Duplicate: fill local tensor with scalar constant
+DUPLICATE_OPS: frozenset[OpKind] = frozenset({OpKind.DUPLICATE})
+# clamp expands into MAXS + MINS nodes inside the analyzer
+CLAMP_KIND: OpKind = OpKind.MAXS  # used only as a marker; see _lower_call
