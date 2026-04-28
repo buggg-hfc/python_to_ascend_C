@@ -1,0 +1,2 @@
+[console_scripts]
+ascend-transpiler = ascend_transpiler.cli:main
